@@ -96,11 +96,14 @@ instead of in a container.
 
 - **Not novel on its own.** Several tools already ship host-side credential
   injection plus an egress allowlist:
-  - Docker Sandboxes (`sbx`)
-  - Claude Code's sandbox (credential masking)
-  - nono
-  - Infisical Agent Vault
-  - microsandbox
+  - [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) (`sbx`)
+  - [Claude Code's sandbox](https://code.claude.com/docs/en/sandboxing) (credential masking)
+  - [nono](https://nono.sh/), an open-source kernel-level sandbox for
+    coding agents (Landlock on Linux, Seatbelt on macOS) from
+    [nolabs](https://nolabs.ai/), started by Luke Hinds of Sigstore. Its
+    "phantom token" proxy injects real secrets at the network boundary.
+  - [Infisical Agent Vault](https://infisical.com/blog/agent-vault-the-open-source-credential-proxy-and-vault-for-agents)
+  - [microsandbox](https://github.com/superradcompany/microsandbox)
   
   The point of leash is narrower:
   1. Ringleader's laptop gap (no network rules or credential gateway on Mac
