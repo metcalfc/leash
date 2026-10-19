@@ -503,6 +503,23 @@ def make_handler(gw: Gateway) -> type[http.server.BaseHTTPRequestHandler]:
                 gw.audit.write(kind="egress", decision="deny", session=session, host=f"{host}:{port}", reason=why)
                 self._error(403, "permission_error", f"{host}:{port} refused: {why}")
                 return
+            # Egress costs a capability like everything else: otherwise any
+            # process on the box gets out, and nothing says who it was.
+            if session == "-":
+                gw.audit.write(
+                    kind="egress",
+                    decision="deny",
+                    session=session,
+                    host=f"{host}:{port}",
+                    reason="bad or missing session capability",
+                )
+                self._error(
+                    407,
+                    "authentication_error",
+                    "bad or missing session capability",
+                    {"Proxy-Authenticate": 'Basic realm="leash"'},
+                )
+                return
             try:
                 up = socket.create_connection((host, port), timeout=10)
             except OSError as e:

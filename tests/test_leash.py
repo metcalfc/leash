@@ -258,6 +258,16 @@ class LeashTest(unittest.TestCase):
         self.assertEqual(s.recv(100), b"echo:ping")
         s.close()
 
+    def test_egress_needs_a_capability(self) -> None:
+        # Found in the VM spike: an allowlisted host was reachable with no capability at all.
+        head, s = self.connect(f"localhost:{self.echo_port}")
+        s.close()
+        self.assertIn(b"407", head.split(b"\r\n")[0])
+        self.assertIn(b"Proxy-Authenticate", head)
+        head, s = self.connect(f"localhost:{self.echo_port}", "lsh_not-a-real-capability")
+        s.close()
+        self.assertIn(b"407", head.split(b"\r\n")[0])
+
     def test_egress_denied_host_and_port(self) -> None:
         head, s = self.connect("evil.example:443")
         s.close()

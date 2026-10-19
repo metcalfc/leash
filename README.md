@@ -92,6 +92,26 @@ instead of in a container.
   - every decision lands in the audit log, attributed to `chad-claude`.
 - **Not verified:** a live Claude Code session. The machine this was built on intercepts outbound TLS, so upstream calls failed there for reasons unrelated to leash.
 
+## The VM spike
+
+`spike/` swaps the container for a real VM, closer to what Ringleader runs on
+a Mac. QEMU's user-mode network with `restrict=on` drops every packet the
+guest sends except one forward: `10.0.2.100:8080` in the guest, spliced to
+leash on the host's loopback. The rule lives in the QEMU process on the host,
+so root in the guest has nothing to flush.
+
+```
+./leash -c spike/policy.json init
+./spike/vm.sh provision          # once: network open, install tools, power off
+make spike-gw                    # second terminal: the gateway, key from the keychain
+./spike/vm.sh up                 # network locked
+./spike/vm.sh ssh                # then ~/leash/works.sh, attack.sh, cap.sh
+make spike-record                # the demo, via VHS
+```
+
+`spike/HANDOFF.md` is the brief for running it on a Mac. `spike/RESULTS.md`
+is where the numbers go.
+
 ## What this is not
 
 - **Not novel on its own.** Several tools already ship host-side credential
