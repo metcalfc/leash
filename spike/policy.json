@@ -1,6 +1,6 @@
 {
-  "_note": "Spike policy: leash on the host's loopback, reached from the VM only through QEMU's guestfwd at 10.0.2.100:8080. The cap is deliberately tiny so it trips on camera.",
-  "listen": "127.0.0.1:8080",
+  "_note": "Spike policy: leash on the host's loopback, on 18080 (8080 is too commonly taken), reached from the VM only through QEMU's guestfwd at 10.0.2.100:8080. The cap is deliberately tiny so it trips on camera.",
+  "listen": "127.0.0.1:18080",
   "advertise": "http://10.0.2.100:8080",
   "state_dir": "run",
   "sessions": ["demo"],

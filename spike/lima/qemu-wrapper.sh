@@ -15,7 +15,7 @@ set -euo pipefail
 
 REAL=${LEASH_REAL_QEMU:-$(brew --prefix qemu)/bin/qemu-system-aarch64}
 GW=${LEASH_LIMA_GW:-192.168.5.100:8080}
-LEASH_PORT=${LEASH_PORT:-8080}
+LEASH_PORT=${LEASH_PORT:-18080}
 LOG=${LEASH_WRAPPER_LOG:-/tmp/leash-qemu-wrapper.log}
 
 args=()

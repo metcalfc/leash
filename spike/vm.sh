@@ -17,7 +17,7 @@
 #
 # Environment: LEASH_VM_STATE (default spike/.vm), LEASH_VM_SSH_PORT (2222),
 # LEASH_VM_MEM (4096), LEASH_VM_CPUS (4), LEASH_SESSION (demo),
-# LEASH_PORT (8080, where leash listens on the host's loopback),
+# LEASH_PORT (18080, where leash listens on the host's loopback),
 # LEASH_VM_INSTALL_CLAUDE (1).
 set -euo pipefail
 
@@ -27,7 +27,7 @@ SSH_PORT=${LEASH_VM_SSH_PORT:-2222}
 MEM=${LEASH_VM_MEM:-4096}
 CPUS=${LEASH_VM_CPUS:-4}
 SESSION=${LEASH_SESSION:-demo}
-LEASH_PORT=${LEASH_PORT:-8080}
+LEASH_PORT=${LEASH_PORT:-18080}
 INSTALL_CLAUDE=${LEASH_VM_INSTALL_CLAUDE:-1}
 GW_ADDR=10.0.2.100   # what the guest dials; must sit inside slirp's 10.0.2.0/24
 GW_PORT=8080
@@ -121,7 +121,7 @@ cmd_provision() {
   log "first boot, network OPEN, installing tools; the VM powers off when done"
   log "  follow along: tail -f $STATE/console-provision.log"
   local t0=$SECONDS
-  "$QEMU" "${MACHINE[@]}" "${FIRMWARE[@]}" -m "$MEM" -smp "$CPUS" \
+  "$QEMU" "${MACHINE[@]}" ${FIRMWARE[@]+"${FIRMWARE[@]}"} -m "$MEM" -smp "$CPUS" \
     -drive "if=virtio,file=$DISK,format=qcow2" \
     -drive "if=virtio,file=$STATE/seed.iso,format=raw,readonly=on" \
     -netdev "$NET_OPEN" -device virtio-net-pci,netdev=n0 \
@@ -152,12 +152,25 @@ wait_ssh() {
   die "ssh never came up -- see $STATE/console-up.log"
 }
 
+# The guestfwd splices the guest to whatever holds the port, not to leash by
+# name. Refuse to boot unless the listener answers the way leash does.
+check_gateway() {
+  local body
+  body=$(curl -s -m 3 "http://127.0.0.1:$LEASH_PORT/leash-probe/" 2>/dev/null || true)
+  [[ $body == *"no route /leash-probe/"* ]] && return 0
+  if lsof -nP -iTCP:"$LEASH_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    die "something that is not leash holds 127.0.0.1:$LEASH_PORT; the VM would be spliced to it"
+  fi
+  die "leash is not listening on 127.0.0.1:$LEASH_PORT -- start it first (make spike-gw)"
+}
+
 cmd_up() {
   [[ -f $DISK ]] || die "no VM disk -- run: vm.sh provision"
   running && { log "already running"; return; }
+  check_gateway
   log "booting with the network LOCKED: restrict=on, guestfwd $GW_ADDR:$GW_PORT -> 127.0.0.1:$LEASH_PORT"
   local t0=$SECONDS
-  "$QEMU" "${MACHINE[@]}" "${FIRMWARE[@]}" -m "$MEM" -smp "$CPUS" \
+  "$QEMU" "${MACHINE[@]}" ${FIRMWARE[@]+"${FIRMWARE[@]}"} -m "$MEM" -smp "$CPUS" \
     -drive "if=virtio,file=$DISK,format=qcow2" \
     -netdev "$NET_LOCKED" -device virtio-net-pci,netdev=n0 \
     -display none -serial "file:$STATE/console-up.log" \
@@ -186,7 +199,8 @@ cmd_down() {
 cmd_status() {
   if running; then
     log "running, pid $(cat "$PIDFILE")"
-    ps -o args= -p "$(cat "$PIDFILE")" | tr ' ' '\n' | grep -E '^user,' || true
+    # The netdev value holds spaces (the guestfwd command), so cut it out whole.
+    ps -o args= -p "$(cat "$PIDFILE")" | sed -nE 's/.*-netdev (user,.*) -device .*/\1/p' | tr ',' '\n' | sed 's/^/  /' || true
   else
     log "not running"
   fi

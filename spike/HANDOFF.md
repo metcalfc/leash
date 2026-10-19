@@ -31,7 +31,7 @@ forwards, plus one `guestfwd` to leash on the host's loopback.
   `provision` boots once with the network open to install tools.
   `up` boots with the network locked.
 - `spike/policy.json`: the spike's policy. leash listens on
-  127.0.0.1:8080; the guest reaches it at 10.0.2.100:8080. The spend cap is
+  127.0.0.1:18080; the guest reaches it at 10.0.2.100:8080. The spend cap is
   $0.25 per day so it trips on camera.
 - `spike/guest/`: `works.sh` (real work through the gateway), `attack.sh`
   (root trying every way out) and `cap.sh` (calls until the cap refuses).
