@@ -24,7 +24,8 @@ with a voice over it.
   `./spike/vm.sh up` before rolling.
 - Set the cap in `spike/policy.json` so it trips in three or four calls.
   $0.25 is about right for Claude Code's default model; check the left pane's
-  per-call cost on a dry run.
+  per-call cost on a dry run. A warm prompt cache roughly halves it: one take
+  tripped on call 5, the next on call 11.
 - Check the frame for secrets before publishing: the env output is masked,
   the key never appears, and the capability is truncated.
 

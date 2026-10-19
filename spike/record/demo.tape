@@ -34,9 +34,17 @@ Sleep 2s
 Ctrl+B
 Type "%"
 Sleep 500ms
-Type "export PS1='host$ ' && clear && ./spike/vm.sh up 2>&1 | tail -1 && clear" Enter
-Wait+Screen@240s /host\$ $/
+Type "export PS1='host$ ' && clear && ./spike/vm.sh up 2>&1 | tail -1" Enter
+# Go regexp: without (?m), $ is the end of the whole screen, never a line.
+Wait+Screen@240s /pushed run\/demo.env|vm\] [a-z]/
+Type "clear" Enter
+Sleep 500ms
 Show
+
+# ---- 0. one way out, enforced by QEMU on the host
+Type "./spike/vm.sh status" Enter
+Sleep 5s
+Type "clear" Enter
 
 # ---- 1. the VM holds capabilities, not keys
 Type "./spike/vm.sh ssh" Enter
@@ -46,7 +54,8 @@ Sleep 4s
 
 # ---- 2. real work, on a key it never sees
 Type "claude -p 'Reply with exactly: LEASH_OK'" Enter
-Wait+Screen@90s /LEASH_OK/
+# Not just /LEASH_OK/: the typed prompt contains it. Output sits after the pane border.
+Wait+Screen@90s /│LEASH_OK/
 Sleep 2s
 
 # ---- 3. root tries every way out
@@ -72,8 +81,10 @@ Ctrl+C
 Sleep 1s
 Ctrl+B
 Type "o"
-Type "clear && ./spike/vm.sh ssh claude -p 'still there?' 2>&1 | tail -2" Enter
-Sleep 20s
+# Claude Code otherwise retries with backoff for ~3 minutes before giving up.
+Type "clear && ./spike/vm.sh ssh CLAUDE_CODE_MAX_RETRIES=0 claude -p 'still there?' 2>&1 | tail -2" Enter
+Wait+Screen@60s /API Error/
+Sleep 5s
 
 Hide
 Type "./spike/vm.sh down; tmux kill-session -t leash" Enter
