@@ -6,7 +6,7 @@ runs on. A throwaway proof of concept, in the spirit of
 **capability**, never a credential.
 
 ```
-make test        # 13 tests, loopback only, no docker, no keys
+make test        # 15 tests, loopback only, no docker, no keys
 make up          # gateway + agent container on a network with no way out but the gateway
 make demo        # what the agent can and can't do
 make report      # who did what, and what it cost
@@ -75,7 +75,7 @@ instead of in a container.
 
 ## Verified
 
-- **Unit tests:** `make test`, 13 of them, against fake upstreams. They cover:
+- **Unit tests:** `make test`, 15 of them, against fake upstreams. They cover:
   - the key swap, and the OAuth/Max beta header (the same fix as imp);
   - refusal before upstream;
   - path traversal;

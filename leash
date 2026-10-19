@@ -199,7 +199,12 @@ def load_sessions(policy: Policy) -> dict[str, str]:
 
 def env_for(policy: Policy, cap: str) -> dict[str, str]:
     """What the agent's machine gets. Nothing in here is a credential: each
-    value is worthless anywhere but through this gateway."""
+    value is worthless anywhere but through this gateway.
+
+    Routes are advertised whether or not their credential resolves right now:
+    the env file is written once and pushed to the agent's machine, while keys
+    are only needed by `serve`. A route without a key is refused there."""
+    configured = set(policy.routes) | set(policy.disabled_routes)
     adv = urllib.parse.urlsplit(policy.advertise)
     host = adv.netloc
     authed = f"{adv.scheme}://agent:{cap}@{host}"
@@ -215,18 +220,18 @@ def env_for(policy: Policy, cap: str) -> dict[str, str]:
         # the allowlist would refuse -- noise in the audit log, not a threat.
         "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     }
-    if "anthropic" in policy.routes:
+    if "anthropic" in configured:
         env["ANTHROPIC_BASE_URL"] = f"{policy.advertise}/anthropic"
         env["ANTHROPIC_AUTH_TOKEN"] = cap
-    if "openai" in policy.routes:
+    if "openai" in configured:
         env["OPENAI_BASE_URL"] = f"{policy.advertise}/openai/v1"
         env["OPENAI_API_KEY"] = cap
-    if "github" in policy.routes:
+    if "github" in configured:
         # git sees https://github.com/... and quietly talks to the gateway.
         env["GIT_CONFIG_COUNT"] = "1"
         env["GIT_CONFIG_KEY_0"] = f"url.{authed}/github/.insteadOf"
         env["GIT_CONFIG_VALUE_0"] = "https://github.com/"
-    if "github-api" in policy.routes:
+    if "github-api" in configured:
         env["GH_HOST"] = "github.com"
         env["GITHUB_API_URL"] = f"{policy.advertise}/github-api"
     return env

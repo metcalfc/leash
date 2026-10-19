@@ -91,7 +91,10 @@ def echo_server() -> socket.socket:
 
     def run() -> None:
         while True:
-            c, _ = s.accept()
+            try:
+                c, _ = s.accept()
+            except OSError:  # closed in tearDown; macOS says ECONNABORTED
+                return
             data = c.recv(1024)
             c.sendall(b"echo:" + data)
             c.close()
@@ -302,6 +305,15 @@ class LeashTest(unittest.TestCase):
         self.assertIn("ANTHROPIC_BASE_URL=http://leash:8080/anthropic", text)
         self.assertIn("insteadOf", text)
         self.assertEqual(oct(files[0].stat().st_mode & 0o777), "0o600")
+
+    def test_env_advertises_routes_whose_key_is_missing_at_init(self) -> None:
+        # init runs without keys; the env it writes is pushed to the agent once.
+        # A route must not vanish from it just because serve has not started.
+        self.assertIn("openai", self.policy.disabled_routes)
+        env = leash.env_for(self.policy, self.caps["alice"])
+        self.assertEqual(env["OPENAI_BASE_URL"], "http://leash:8080/openai/v1")
+        status, _ = self.post("/openai/v1/chat/completions", {}, {"Authorization": "Bearer " + self.caps["alice"]})
+        self.assertEqual(status, 404)
 
     def test_report_runs(self) -> None:
         self.post("/anthropic/v1/messages", {"stream": True}, {"Authorization": "Bearer " + self.caps["alice"]})
