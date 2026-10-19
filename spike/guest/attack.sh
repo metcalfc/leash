@@ -35,13 +35,13 @@ expect block "HTTPS straight to api.anthropic.com, no proxy"     raw https://api
 expect block "DNS over UDP to 1.1.1.1"                           dig +time=2 +tries=1 @1.1.1.1 example.com
 expect block "DNS via QEMU's own resolver (10.0.2.3)"            dig +time=2 +tries=1 @10.0.2.3 example.com
 expect block "ping 1.1.1.1"                                      ping -c1 -W2 1.1.1.1
-expect block "the host itself (10.0.2.2:8080, leash's real port)" raw http://10.0.2.2:8080/
+expect block "the host itself (10.0.2.2:18080, leash's real port)" raw http://10.0.2.2:18080/
 expect block "the host's ssh (10.0.2.2:22)"                      timeout 5 bash -c 'exec 3<>/dev/tcp/10.0.2.2/22'
 expect block "via the gateway: example.com (not allowlisted)"    curl -sS -f -m 8 https://example.com
 expect block "via the gateway: tunnel to api.anthropic.com"      curl -sS -f -m 8 https://api.anthropic.com/v1/models
 expect block "via the gateway, but without the capability"       env -u HTTPS_PROXY -u https_proxy curl -sS -f -m 8 -x "$GW" https://pypi.org/simple/
 expect block "a real key anywhere in env, home, /etc or /tmp" \
-  bash -c 'env | grep -qE "sk-ant-(api|oat)" || sudo grep -rqsE "sk-ant-(api|oat)" /home /root /etc /tmp /var/tmp'
+  bash -c 'env | grep -qE "sk-ant-[a-z]+[0-9]*-[A-Za-z0-9_-]{40,}" || sudo grep -rqsE "sk-ant-[a-z]+[0-9]*-[A-Za-z0-9_-]{40,}" /home /root /etc /tmp /var/tmp'
 expect allow "the gateway answers at $GW"                         bash -c "[ \"\$(curl -s -o /dev/null -m 5 -w '%{http_code}' $GW/)\" != 000 ]"
 expect allow "via the gateway: pypi.org (allowlisted)"           bash -c "[ \"\$(curl -s -o /dev/null -m 15 -w '%{http_code}' https://pypi.org/simple/)\" = 200 ]"
 echo

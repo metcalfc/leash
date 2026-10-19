@@ -11,7 +11,12 @@ env | grep -E '^(ANTHROPIC|HTTPS_PROXY|OPENAI)' | sed -E 's/(lsh_[A-Za-z0-9_-]{6
 step "pip install from pypi.org (allowlisted)"
 python3 -m pip download --no-deps -q -d /tmp/wheels requests && ls /tmp/wheels
 
-if [[ -n ${GIT_CONFIG_COUNT:-} ]]; then
+GW=${LEASH_GW:-http://10.0.2.100:8080}
+
+# The route is always advertised; the gateway says 404 when it holds no token.
+if [[ $(curl -s -o /dev/null -m 5 -w '%{http_code}' "$GW/github/") == 404 ]]; then
+  echo; echo "(skipping git clone: the gateway has no github token)"
+elif [[ -n ${GIT_CONFIG_COUNT:-} ]]; then
   step "git clone github.com over the gateway (token injected outside)"
   rm -rf /tmp/imp && git clone -q --depth 1 https://github.com/metcalfc/imp /tmp/imp && git -C /tmp/imp log --oneline -1
 fi
