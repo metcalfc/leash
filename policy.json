@@ -16,7 +16,7 @@
       "upstream": "https://api.openai.com",
       "credential": "env:OPENAI_API_KEY",
       "inject": "bearer",
-      "paths": ["/v1/responses", "/v1/responses/*", "/v1/chat/completions", "/v1/models", "/v1/models/*"],
+      "paths": ["/v1/responses", "/v1/chat/completions", "/v1/models", "/v1/models/*"],
       "meter": true
     },
     "github": {
