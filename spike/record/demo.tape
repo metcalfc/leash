@@ -26,17 +26,25 @@ Set WindowBar Colorful
 # ---- setup, off camera: gateway in the left pane, VM booted in the right
 Hide
 Type "export PS1='host$ ' && clear" Enter
-Type "tmux -f /dev/null new -s leash \; set status off" Enter
+# an aborted recording leaves its VM, tmux session and gateway behind; the
+# duplicate session then keeps every later keystroke out of tmux
+Type "./spike/vm.sh down >/dev/null 2>&1; tmux -L leash-record kill-server 2>/dev/null; clear" Enter
+Sleep 2s
+Type "tmux -L leash-record -f /dev/null new -s leash \; set status off" Enter
 Sleep 1s
 Type "export PS1='leash$ ' ANTHROPIC_API_KEY=$(security find-generic-password -s leash-anthropic -w) && clear" Enter
-Type "./leash -c spike/policy.json serve" Enter
+Type "./leash -c spike/policy.json --session ${LEASH_SESSION:-demo} init && ./leash -c spike/policy.json --session ${LEASH_SESSION:-demo} serve" Enter
 Sleep 2s
 Ctrl+B
 Type "%"
 Sleep 500ms
 Type "export PS1='host$ ' && clear && ./spike/vm.sh up 2>&1 | tail -1" Enter
 # Go regexp: without (?m), $ is the end of the whole screen, never a line.
-Wait+Screen@240s /pushed run\/demo.env|vm\] [a-z]/
+Wait+Screen@240s /\[vm\] ready: session/
+Type "./leash -c spike/policy.json --session ${LEASH_SESSION:-demo} preflight --require-route anthropic --fresh" Enter
+Wait+Screen@15s /preflight passed/
+Type "./spike/vm.sh ssh command -v claude" Enter
+Wait+Screen@15s /\/.local\/bin\/claude/
 Type "clear" Enter
 Sleep 500ms
 Show
@@ -53,25 +61,24 @@ Type "env | grep -E '^(ANTHROPIC|HTTPS_PROXY)' | sed -E 's/(lsh_.{6})[^@]*/\1...
 Sleep 4s
 
 # ---- 2. real work, on a key it never sees
-Type "claude -p 'Reply with exactly: LEASH_OK'" Enter
+Type "CLAUDE_CODE_MAX_RETRIES=0 claude --model haiku -p 'Reply with exactly: LEASH_OK'" Enter
 # Not just /LEASH_OK/: the typed prompt contains it. Output sits after the pane border.
 Wait+Screen@90s /│LEASH_OK/
 Sleep 2s
 
 # ---- 3. root tries every way out
-Type "clear && ~/leash/attack.sh" Enter
-Wait+Screen@180s /all held|FAILED/
+Type "exit" Enter
+Sleep 1s
+Type "clear && ./spike/vm.sh verify" Enter
+Wait+Screen@180s /all held: tested bypasses blocked/
 Sleep 5s
 
 # ---- 4. the spend cap trips, and the agent can't raise it
-Type "clear && ~/leash/cap.sh" Enter
-Wait+Screen@300s /REFUSED|never tripped/
+Type "clear && ./spike/vm.sh ssh leash/cap.sh" Enter
+Wait+Screen@300s /REFUSED/
 Sleep 4s
-Type "exit" Enter
-Sleep 1s
-
 # ---- 5. who did what, and what it cost
-Type "clear && ./leash -c spike/policy.json report" Enter
+Type "clear && ./leash -c spike/policy.json --session ${LEASH_SESSION:-demo} report" Enter
 Sleep 6s
 
 # ---- 6. stop the gateway: access is gone, nothing to scrub
@@ -87,5 +94,5 @@ Wait+Screen@60s /API Error/
 Sleep 5s
 
 Hide
-Type "./spike/vm.sh down; tmux kill-session -t leash" Enter
+Type "./spike/vm.sh down; tmux -L leash-record kill-session -t leash" Enter
 Sleep 3s

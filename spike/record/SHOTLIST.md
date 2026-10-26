@@ -1,39 +1,54 @@
-# Shot list: "Your agent's machine never sees your API key"
+# Shot list: the agent's machine never receives the provider key
 
-About 4 minutes. Two panes: leash's log on the left, the agent's VM on the
-right. `demo.tape` records the same beats unattended; this is the version
-with a voice over it.
+Two panes: leash's gateway log on the left, the agent's VM on the right.
+The tape records this shorter walkthrough after the complete acceptance
+sequence in `../HANDOFF.md`. The original 85-second recording is historical;
+changed scripts require a new take before being described as recorded evidence.
 
 | # | On screen | Say |
-|---|---|---|
-| 0 | Title card, then the two panes | Coding agents run for hours on the one machine that holds everything: your code, your keys, your VPN. This is how to give the agent a machine where none of that can leak. |
-| 1 | `vm.sh status`: QEMU with `restrict=on` and one `guestfwd` | This VM has exactly one way out. QEMU drops every packet it sends except to one address, which is spliced to a gateway on my laptop. That rule lives in the QEMU process on the host, not in the VM. |
-| 2 | In the VM: `env`, showing `lsh_…` values | The VM holds capabilities, not keys. They're worthless anywhere except through this gateway. |
-| 3 | `claude -p …` returns `LEASH_OK`; the left pane logs `allow … $0.0x` | Claude Code works normally. The gateway swaps the capability for the real key on the way out, and prices the call as it streams back. |
-| 4 | `attack.sh`: a column of PASS/block | Now I'm root, and I try every way around it: flush the firewall, unset the proxy, hit an IP directly, DNS over UDP, ping, the host itself, tunnel straight to Anthropic. Every one is refused, and the refusals land in the log. |
-| 5 | `cap.sh`: a few calls ok, then REFUSED | Spend is capped per session, and the cap lives on the host. The agent can't raise it. A real deployment would set it in dollars per day. |
-| 6 | `leash report`: per-session requests, denials, spend | One line per decision, attributed to the session. That's the evidence a security team asks for. |
-| 7 | Ctrl-C the gateway; `claude` in the VM fails | Stop the gateway and access is gone. Nothing to rotate, nothing to scrub off the VM, because there was never a key on it. |
-| 8 | Back to the title | The same file and the same rules can run in your own cloud account, next to a firewall rule your security team can see. That's the bridge. |
+| --- | --- | --- |
+| 0 | Title, then both panes | This POC keeps provider keys and network policy outside the coding agent's VM. It limits destinations and accounts for observed model usage. |
+| 1 | `vm.sh status`: `restrict=on` and one guestfwd | QEMU enforces the outbound path on the host. Root inside this guest cannot change that rule. |
+| 2 | Guest env, showing truncated `lsh_…` values | This VM holds a session capability. The real provider key stays in the gateway. A session is the budget identity selected on the host. |
+| 3 | Claude returns `LEASH_OK`; gateway logs usage | Claude works through the gateway. The gateway replaces the capability with the real key and prices usage from the response. |
+| 4 | Host `vm.sh verify`, PASS/block and PASS/allow | These destinations worked during open provisioning. Now, after removing the guest's firewall rules, the same direct probes are blocked. Gateway denials appear in the left log; packet drops are evidenced by this test transcript. |
+| 5 | `cap.sh`: successful calls, then REFUSED | Once observed usage crosses the session's daily cap, the gateway refuses the next call. The guest cannot edit the policy or ledger. In-flight calls can overshoot. |
+| 6 | `leash report` | These are gateway decisions, attributed when a valid capability was supplied, and the estimated charges from observed usage. |
+| 7 | Ctrl-C gateway; guest call fails | Stop the gateway and access stops. The earlier acceptance sequence also checked recovery with the same capability and persistence of the cap across restart. |
+| 8 | Title | This is an integration direction for the QEMU driver. Reusing the gateway in a customer cloud is a proposal; we have not run that experiment. |
 
-## Before recording
+## Before a take
 
-- Use a dedicated Anthropic key with a low limit set in the console, stored in
-  the keychain as `leash-anthropic`. Never `echo` it.
-- Provision the VM off camera (`./spike/vm.sh provision`), then boot it with
-  `./spike/vm.sh up` before rolling.
-- Set the cap in `spike/policy.json` so it trips in three or four calls.
-  $0.25 is about right for Claude Code's default model; check the left pane's
-  per-call cost on a dry run. A warm prompt cache roughly halves it: one take
-  tripped on call 5, the next on call 11.
-- Check the frame for secrets before publishing: the env output is masked,
-  the key never appears, and the capability is truncated.
+- Use a dedicated provider key with a low provider-side limit, stored only in
+  the host keychain. Never print it.
+- Complete the canonical handoff's acceptance sequence, including successful
+  positive controls, revoke/recovery before exhausting the cap, and refusal
+  after restarting an exhausted session.
+- The tape starts its own gateway. Stop any manual gateway on 18080 first.
+  Use an unused session, e.g. `LEASH_SESSION=demo-take-2 make spike-record`.
+  The tape initializes that identity and checks live routes, unused budget and
+  the installed Claude binary before revealing the screen. It keeps prior
+  ledger and audit evidence. Never reset either to make a take pass.
+- Keep `LEASH_VM_STATE` and `LEASH_VM_SSH_PORT` consistent with the provisioned
+  VM. The updated probes require a baseline from the current provisioning kit.
+- The cap call count depends on model pricing and prompt caching. A failure or
+  absent refusal must stop the take. The tape waits for successful acceptance
+  output, not a generic failure marker.
+- The dedicated tmux socket is `leash-record`. After a failed take, inspect it
+  with `tmux -L leash-record attach -t leash`; stop its gateway and remove that
+  demo session before retrying. Do not reuse a partly spent session for a
+  fresh take. The tape does not delete old evidence.
+- Watch the whole recording for secrets and errors before publishing. Masked
+  env output is not a substitute for checking the result.
 
-## What not to claim
+## Scope of the claims
 
-- This isn't Ringleader's product. It's a proof that the Mac gap is a gateway
-  in front of the VM's network, not a quarter of work.
-- `restrict=on` is QEMU-only. Lima's vz driver and Docker's own VMM need a
-  different mechanism; see RESULTS.md for what the spike found.
-- A live session can still spend up to the cap. The cap bounds it; it doesn't
-  prevent it.
+Allowlisted hosts can still receive code, and opaque npm/PyPI tunnels can carry
+uploads. This is not data-loss prevention. Missing final usage in interrupted
+streams may undercount spend; prices are illustrative. `usage_observed` in the
+audit says some usage was seen, not that all usage was captured.
+
+QEMU and Lima-QEMU have recorded evidence. vz and WSL2 require independent
+validation. The cloud experiment is deferred. The VM driver contract is in
+README; the competitive comparison does not establish that this pattern is
+exclusive to leash or Ringleader.

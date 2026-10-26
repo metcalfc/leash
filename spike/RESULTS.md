@@ -198,3 +198,55 @@ The gateway is the same for all four, and it's the part that's already
 working. So the answer to the spike's question is **weeks, not a quarter**,
 for QEMU and Lima-qemu. Lima vz and WSL2 each need a spike of their own to
 earn the same confidence.
+
+## Review follow-up validation (Oct 18, 2026)
+
+This section describes the working-tree review fixes after the original Mac
+run above. The historical timings and recording remain attributed to that
+original revision. No cloud experiment was attempted; it is deferred because
+no account is available.
+
+| Check | Result |
+| --- | --- |
+| `make test` | 22 pass: existing gateway checks plus enabled OpenAI JSON/SSE formats and caps, refusal of background work, validation-denial audit, running-gateway preflight, and script error handling |
+| `make lint` | Python and shell checks pass |
+| `make test-docker` | Passed on Docker Engine 29.9.1 using the real gateway image and no provider keys. Non-root control reaches a healthy host listener on a plain internal bridge; isolated agent cannot reach the same listener; listener rechecked healthy afterward; agent can still reach leash. Network options come from `compose.yaml` |
+| Revised VM open-network controls | All seven passed in a disposable Ubuntu arm64 VM on this Mac: named HTTPS, raw-IP HTTPS, direct model-host HTTPS, public DNS, QEMU DNS, ICMP, and a known host listener |
+| Revised VM locked checks | All seven direct probes blocked after successful root firewall flush and explicit default-route installation. Gateway CONNECT refusals returned exactly 403/403/407; scoped key-shape scan found none; gateway responded and authenticated PyPI returned 200 |
+| Fresh-session preflight | Passed against the disposable running gateway: session `review`, $0 spent, $0.25 remaining, Anthropic route enabled. Placeholder credential only; preflight makes no provider call |
+| New live model/recording run | Not performed. Previous live Claude/cap/revoke and recording results above remain historical evidence; changed demo scripts need a new real-key take before publication |
+| OpenAI live client | Not performed; provider-shaped fake upstream tests only |
+| Cloud, vz and WSL2 | Not tested in this follow-up; cloud explicitly deferred |
+
+The disposable VM reused the immutable base image, with its own disk, SSH key,
+ports, capability, ledger and audit outside the repository. It did not install
+Claude or receive a real provider credential. Provisioning took 52 s and locked
+boot to SSH took 7 s; these are harness timings, not new Claude latency data.
+It was powered off after verification; test gateway and control listeners were
+stopped. Existing VM and spend evidence were not reset.
+
+Two harness issues found by the stronger controls were corrected:
+
+- cloud-init prefixes serial output with a timestamp and process label; the
+  initial baseline-marker check assumed the marker began at column zero.
+  All seven controls had passed, but the host correctly stopped acceptance
+  until the marker detection was fixed.
+- QEMU's restricted DHCP configuration may omit a default route. The earlier
+  attack script selected its interface from that nonexistent route and ignored
+  the failed reset. The revised script selects the slirp interface by its
+  assigned address, requires root setup to succeed, and actually installs the
+  default route before trying the bypasses. The locked run still held.
+
+OpenAI Chat streaming now forces `include_usage`; background Responses work
+is rejected, and stored-response retrieval is not allowlisted. This remains an
+observed-usage cap: partial streams can undercount, concurrent calls can
+overshoot, and illustrative prices are not an invoice. `usage_observed` means
+some usage was parsed, not that all usage was captured.
+
+The canonical handoff is `spike/HANDOFF.md`; the root handoff points to it.
+A fresh take selects a new host-owned `LEASH_SESSION`, preserving old audit and
+ledger data. Revoke/recovery runs before cap exhaustion; a second restart then
+proves an exhausted cap persists. README now maps claims to evidence, defines
+session semantics, and states the VM driver integration contract. Research
+summaries distinguish model-token budgets from compute billing and describe
+portability as an integration goal rather than an exclusive capability.
