@@ -11,6 +11,7 @@
 #   vm.sh provision   first boot, network OPEN: install tools, then power off
 #   vm.sh up          boot with the network LOCKED; push env + guest scripts
 #   vm.sh ssh [cmd]   a login shell in the guest (capabilities loaded)
+#   vm.sh verify      repeat open-network controls under lockdown; no model call
 #   vm.sh down        power off
 #   vm.sh status      is it running, and how is its network set up
 #   vm.sh destroy     delete the VM disk (keeps the downloaded image)
@@ -73,7 +74,7 @@ KEY=$STATE/id_ed25519
 PIDFILE=$STATE/qemu.pid
 
 SSH=(ssh -i "$KEY" -p "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
-     -o LogLevel=ERROR -o ConnectTimeout=5 dev@127.0.0.1)
+     -o LogLevel=ERROR -o ConnectTimeout=5 -o ForwardAgent=no -o ClearAllForwardings=yes dev@127.0.0.1)
 
 # The two networks. Same NIC, same guest address; the only difference is
 # restrict=on and the one forward that survives it.
@@ -81,6 +82,25 @@ NET_OPEN="user,id=n0,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22"
 NET_LOCKED="user,id=n0,restrict=on,hostfwd=tcp:127.0.0.1:$SSH_PORT-:22,guestfwd=tcp:$GW_ADDR:$GW_PORT-cmd:nc 127.0.0.1 $LEASH_PORT"
 
 running() { [[ -f $PIDFILE ]] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
+
+# Same healthy host target during provisioning and verification. The chosen
+# port is retained with the VM; failure to rebind is a setup error, not a block.
+start_control() {
+  local port=0 _
+  [[ ! -s $STATE/control.port ]] || port=$(cat "$STATE/control.port")
+  python3 "$HERE/control-server.py" "$STATE/control.port" "$port" &
+  CONTROL_PID=$!
+  trap 'kill "$CONTROL_PID" 2>/dev/null || true; wait "$CONTROL_PID" 2>/dev/null || true' EXIT
+  for _ in $(seq 1 50); do
+    kill -0 "$CONTROL_PID" 2>/dev/null || die 'host control listener failed to start'
+    if [[ -s $STATE/control.port ]] &&
+      [[ $(curl --noproxy '*' -fsS -m 1 "http://127.0.0.1:$(cat "$STATE/control.port")/" 2>/dev/null || true) == leash-host-control ]]; then
+      return
+    fi
+    sleep 0.1
+  done
+  die 'host control listener did not become healthy'
+}
 
 # ---------------------------------------------------------------- commands
 
@@ -96,8 +116,17 @@ make_seed() {
   local dir=$STATE/seed
   rm -rf "$dir" && mkdir -p "$dir"
   [[ -f $KEY ]] || ssh-keygen -q -t ed25519 -N '' -C leash-spike -f "$KEY"
-  sed -e "s|__PUBKEY__|$(cat "$KEY.pub")|" -e "s|__CLAUDE__|$INSTALL_CLAUDE|" \
-    "$HERE/cloud-init.yaml" > "$dir/user-data"
+  python3 - "$HERE" "$KEY.pub" "$INSTALL_CLAUDE" "$(cat "$STATE/control.port")" > "$dir/user-data" <<'PY'
+import sys
+from pathlib import Path
+here, key, install, port = sys.argv[1:]
+template = (Path(here) / "cloud-init.yaml").read_text()
+probes = (Path(here) / "guest/network.sh").read_text()
+for old, new in {"__PUBKEY__": Path(key).read_text().strip(), "__CLAUDE__": install,
+                 "__CONTROL_PORT__": port, "__NETWORK_PROBES__": "\n".join("      " + s for s in probes.splitlines())}.items():
+    template = template.replace(old, new)
+print(template)
+PY
   printf 'instance-id: leash-agent-vm\nlocal-hostname: agent-vm\n' > "$dir/meta-data"
   local iso=$STATE/seed.iso
   rm -f "$iso"
@@ -117,6 +146,7 @@ cmd_provision() {
   running && die "VM is running; vm.sh down first"
   rm -f "$DISK"
   qemu-img create -q -f qcow2 -F qcow2 -b "$BASE" "$DISK" 20G
+  start_control
   make_seed
   log "first boot, network OPEN, installing tools; the VM powers off when done"
   log "  follow along: tail -f $STATE/console-provision.log"
@@ -128,11 +158,13 @@ cmd_provision() {
     -display none -serial "file:$STATE/console-provision.log"
   grep -q 'leash-provision-done' "$STATE/console-provision.log" \
     || die "provisioning did not finish cleanly -- see $STATE/console-provision.log"
+  grep -Eq '(^|: )leash-network-baseline-passed' "$STATE/console-provision.log" \
+    || die "open-network positive controls failed -- this VM cannot support the isolation claim; see the provision log"
   log "provisioned in $((SECONDS - t0))s"
 }
 
 push_files() {
-  local env=$HERE/run/$SESSION.env
+  local env=${LEASH_ENV_FILE:-$HERE/run/$SESSION.env}
   [[ -f $env ]] || die "no $env -- run: ./leash -c spike/policy.json init"
   "${SSH[@]}" 'umask 077; cat > ~/.leash.env' < "$env"
   "${SSH[@]}" 'mkdir -p ~/leash'
@@ -156,7 +188,7 @@ wait_ssh() {
 # name. Refuse to boot unless the listener answers the way leash does.
 check_gateway() {
   local body
-  body=$(curl -s -m 3 "http://127.0.0.1:$LEASH_PORT/leash-probe/" 2>/dev/null || true)
+  body=$(curl --noproxy '*' -s -m 3 "http://127.0.0.1:$LEASH_PORT/leash-probe/" 2>/dev/null || true)
   [[ $body == *"no route /leash-probe/"* ]] && return 0
   if lsof -nP -iTCP:"$LEASH_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     die "something that is not leash holds 127.0.0.1:$LEASH_PORT; the VM would be spliced to it"
@@ -166,7 +198,7 @@ check_gateway() {
 
 cmd_up() {
   [[ -f $DISK ]] || die "no VM disk -- run: vm.sh provision"
-  running && { log "already running"; return; }
+  running && { check_gateway; push_files; log "ready: session $SESSION; env and guest scripts pushed"; return; }
   check_gateway
   log "booting with the network LOCKED: restrict=on, guestfwd $GW_ADDR:$GW_PORT -> 127.0.0.1:$LEASH_PORT"
   local t0=$SECONDS
@@ -178,7 +210,17 @@ cmd_up() {
   wait_ssh 300
   log "ssh up in $((SECONDS - t0))s"
   push_files
-  log "pushed run/$SESSION.env and guest scripts; try: vm.sh ssh"
+  log "ready: session $SESSION; env and guest scripts pushed"
+}
+
+cmd_verify() {
+  running || die 'VM is not running; vm.sh up first'
+  check_gateway
+  start_control
+  push_files
+  "${SSH[@]}" "bash -lc 'LEASH_CONTROL_PORT=$(cat "$STATE/control.port") ~/leash/attack.sh'"
+  [[ $(curl --noproxy '*' -fsS -m 2 "http://127.0.0.1:$(cat "$STATE/control.port")/" 2>/dev/null || true) == leash-host-control ]] \
+    || die 'host control disappeared during verification; isolation result is invalid'
 }
 
 cmd_ssh() {
@@ -209,7 +251,7 @@ cmd_status() {
 cmd_destroy() { cmd_down; rm -rf "$DISK" "$STATE/seed" "$STATE/seed.iso" "$STATE"/console-*.log; log "disk removed"; }
 
 case "${1:-}" in
-  fetch|provision|up|down|status|destroy) "cmd_$1" ;;
+  fetch|provision|up|down|status|destroy|verify) "cmd_$1" ;;
   ssh) shift; cmd_ssh "$@" ;;
   *) sed -n '2,24p' "$0"; exit 2 ;;
 esac

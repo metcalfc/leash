@@ -1,15 +1,19 @@
 .DEFAULT_GOAL := help
 export LEASH_UID := $(shell id -u)
 export LEASH_GID := $(shell id -g)
-.PHONY: help init up demo report logs down test lint clean spike-gw spike-up spike-report spike-record
+export LEASH_SESSION ?= demo
+.PHONY: help init up demo report logs down test test-docker lint clean spike-gw spike-up spike-report spike-record spike-preflight spike-verify
 
 help:
 	@echo 'make test     run the unit tests (no docker, no keys)'
+	@echo 'make test-docker  check isolated bridge host access and gateway reachability (Docker 28+)'
 	@echo ''
 	@echo 'spike (a QEMU VM whose only way out is leash; see spike/HANDOFF.md):'
 	@echo 'make spike-gw       run the gateway for the spike (key from the keychain)'
 	@echo 'make spike-up       mint capabilities, boot the locked VM'
 	@echo 'make spike-report   spend and denials for the spike session'
+	@echo 'make spike-preflight check live gateway, enabled route and fresh session budget'
+	@echo 'make spike-verify   compare locked probes with provisioning positive controls'
 	@echo 'make spike-record   record the demo with VHS'
 	@echo ''
 	@echo 'docker version:'
@@ -41,20 +45,29 @@ down:
 test:
 	python3 -m unittest discover -s tests -v
 
+test-docker:
+	python3 tests/docker_network.py
+
 lint:
-	ruff check --select E,F,W,I,B,UP --line-length 120 leash tests/
+	ruff check --select E,F,W,I,B,UP --line-length 120 leash tests/ spike/control-server.py
 	shellcheck demo.sh spike/vm.sh spike/guest/*.sh spike/lima/*.sh
 
 spike-gw:
 	ANTHROPIC_API_KEY=$$(security find-generic-password -s leash-anthropic -w) \
-	  ./leash -c spike/policy.json serve
+	  ./leash -c spike/policy.json --session "$(LEASH_SESSION)" serve
 
 spike-up:
-	./leash -c spike/policy.json init
+	./leash -c spike/policy.json --session "$(LEASH_SESSION)" init
 	./spike/vm.sh up
 
 spike-report:
-	./leash -c spike/policy.json report
+	./leash -c spike/policy.json --session "$(LEASH_SESSION)" report
+
+spike-preflight:
+	./leash -c spike/policy.json --session "$(LEASH_SESSION)" preflight --require-route anthropic --fresh
+
+spike-verify:
+	./spike/vm.sh verify
 
 spike-record:
 	vhs spike/record/demo.tape

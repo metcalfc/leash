@@ -23,6 +23,10 @@ packages:
   - iptables
   - ca-certificates
 write_files:
+  - path: /usr/local/lib/leash/network.sh
+    permissions: "0755"
+    content: |
+__NETWORK_PROBES__
   # Capabilities, not credentials. vm.sh up writes ~/.leash.env each boot.
   - path: /etc/profile.d/zz-leash.sh
     permissions: "0644"
@@ -31,6 +35,7 @@ write_files:
       case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) PATH="$HOME/.local/bin:$PATH" ;; esac
 runcmd:
   - [bash, -c, "[ __CLAUDE__ = 1 ] || exit 0; su - dev -c 'curl -fsSL https://claude.ai/install.sh | bash' || echo 'leash: claude install failed'"]
+  - [bash, /usr/local/lib/leash/network.sh, baseline, "__CONTROL_PORT__"]
   # cloud-init tees runcmd output to the serial console, which vm.sh logs.
   - [bash, -c, "echo leash-provision-$(echo done)"]
 power_state:

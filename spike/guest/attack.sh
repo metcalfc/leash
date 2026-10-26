@@ -1,49 +1,82 @@
 #!/usr/bin/env bash
-# attack.sh -- run inside the VM. Everything an agent with root might try to
-# get around leash. Every BLOCK line should be blocked; the ALLOW lines prove
-# the gateway itself still works. Exit status is the number of failures.
-set -uo pipefail
-
+# Run via vm.sh verify, which supplies a healthy host control listener.
+# Only documented network failures count as blocks; setup failures stop the run.
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=spike/guest/network.sh
+source "$HERE/network.sh"
 GW=${LEASH_GW:-http://10.0.2.100:8080}
+BASELINE=/var/lib/leash/network-baseline.tsv
 fails=0
 row() { printf '  %-6s %-5s %s\n' "$1" "$2" "$3"; }
+die() { printf 'TEST ERROR: %s\n' "$*" >&2; exit 2; }
 
-# expect <block|allow> <description> <command...>
-expect() {
-  local want=$1 what=$2; shift 2
-  local got
-  # Each attempt carries its own timeout (curl -m, dig +time, ping -W):
-  # `timeout` can only run binaries, and some attempts are shell functions.
-  if "$@" >/dev/null 2>&1; then got=allow; else got=block; fi
-  if [[ $got == "$want" ]]; then row PASS "$got" "$what"; else row FAIL "$got" "$what"; fails=$((fails + 1)); fi
+for tool in curl dig ping sudo nft iptables ip grep; do
+  command -v "$tool" >/dev/null || die "required tool missing: $tool"
+done
+[[ $(sudo -n id -u) == 0 ]] || die 'root setup unavailable'
+[[ -s $BASELINE ]] || die 'no open-network baseline; reprovision the VM with the current kit'
+[[ -n ${LEASH_CONTROL_PORT:-} ]] || die 'run ./spike/vm.sh verify on the host to supply a healthy control listener'
+
+# Fail before the attack if root could not actually remove guest-side rules.
+sudo -n nft flush ruleset
+sudo -n iptables -P OUTPUT ACCEPT
+sudo -n iptables -F
+# With restrict=on DHCP may omit the default route. Select the slirp NIC from
+# its address, then install the route explicitly to exercise a real root bypass.
+iface=$(ip -o -4 addr show scope global | awk '$4 ~ /^10[.]0[.]2[.]/ {print $2; exit}')
+[[ -n $iface ]] || die 'no guest interface found'
+sudo -n ip route replace default via 10.0.2.2 dev "$iface"
+echo '  root setup verified: firewall flushed, route reset; direct probes ignore proxies'
+row RESULT GOT ATTEMPT
+
+while read -r id kind target; do
+  grep -Fxq "$(printf '%s\t%s' "$id" "$target")" "$BASELINE" || die "no successful positive control for $id at $target"
+  code=0
+  probe "$kind" "$target" || code=$?
+  case $code in
+    1) row PASS block "$id ($target)" ;;
+    0) row FAIL allow "$id ($target)"; fails=$((fails + 1)) ;;
+    *) die "probe $id failed to execute correctly" ;;
+  esac
+done < <(probes)
+
+# Inspect the proxy's CONNECT response itself, so DNS/TLS/transport errors
+# cannot masquerade as a policy denial. This does not make a model API call.
+proxy_status() {
+  local expected=$1 target=$2 authenticated=$3 code
+  local args=(--proxy "$GW" --noproxy '' --proxytunnel -sS -I -m 8 -o /dev/null -w '%{http_connect}')
+  if [[ $authenticated == yes ]]; then args+=(--proxy-user "agent:${LEASH_CAPABILITY:?capability missing}"); fi
+  code=$(env -u ALL_PROXY -u all_proxy curl "${args[@]}" "$target" 2>/dev/null) || true
+  if [[ $code == "$expected" ]]; then row PASS block "CONNECT $target -> $code"
+  else row FAIL error "CONNECT $target expected $expected, got ${code:-no response}"; fails=$((fails + 1)); fi
 }
+proxy_status 403 https://example.com yes
+proxy_status 403 https://api.anthropic.com/v1/models yes
+proxy_status 407 https://pypi.org/simple/ no
 
-# curl through nothing at all: proxy variables gone, as a hostile agent would have it
-# shellcheck disable=SC2329  # invoked through expect
-raw() { env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy -u ALL_PROXY curl -sS --noproxy '*' -m 6 "$@"; }
-
-echo
-echo "  root in the guest tears down everything it can:"
-sudo nft flush ruleset 2>/dev/null; sudo iptables -P OUTPUT ACCEPT 2>/dev/null; sudo iptables -F 2>/dev/null
-sudo ip route replace default via 10.0.2.2 dev "$(ip -o route show default | awk '{print $5}' | head -1)" 2>/dev/null
-echo "    firewall flushed, default route reset, proxy variables ignored"
-echo
-row RESULT GOT "ATTEMPT"
-expect block "HTTPS to example.com, no proxy"                    raw https://example.com
-expect block "HTTPS straight to an IP (1.1.1.1), no proxy"       raw -k https://1.1.1.1
-expect block "HTTPS straight to api.anthropic.com, no proxy"     raw https://api.anthropic.com
-expect block "DNS over UDP to 1.1.1.1"                           dig +time=2 +tries=1 @1.1.1.1 example.com
-expect block "DNS via QEMU's own resolver (10.0.2.3)"            dig +time=2 +tries=1 @10.0.2.3 example.com
-expect block "ping 1.1.1.1"                                      ping -c1 -W2 1.1.1.1
-expect block "the host itself (10.0.2.2:18080, leash's real port)" raw http://10.0.2.2:18080/
-expect block "the host's ssh (10.0.2.2:22)"                      timeout 5 bash -c 'exec 3<>/dev/tcp/10.0.2.2/22'
-expect block "via the gateway: example.com (not allowlisted)"    curl -sS -f -m 8 https://example.com
-expect block "via the gateway: tunnel to api.anthropic.com"      curl -sS -f -m 8 https://api.anthropic.com/v1/models
-expect block "via the gateway, but without the capability"       env -u HTTPS_PROXY -u https_proxy curl -sS -f -m 8 -x "$GW" https://pypi.org/simple/
-expect block "a real key anywhere in env, home, /etc or /tmp" \
-  bash -c 'env | grep -qE "sk-ant-[a-z]+[0-9]*-[A-Za-z0-9_-]{40,}" || sudo grep -rqsE "sk-ant-[a-z]+[0-9]*-[A-Za-z0-9_-]{40,}" /home /root /etc /tmp /var/tmp'
-expect allow "the gateway answers at $GW"                         bash -c "[ \"\$(curl -s -o /dev/null -m 5 -w '%{http_code}' $GW/)\" != 000 ]"
-expect allow "via the gateway: pypi.org (allowlisted)"           bash -c "[ \"\$(curl -s -o /dev/null -m 15 -w '%{http_code}' https://pypi.org/simple/)\" = 200 ]"
-echo
-if [[ $fails -eq 0 ]]; then echo "  all held: the only way out is leash"; else echo "  $fails FAILED"; fi
+# grep: 0=actual key found, 1=no match, 2=scan error. Permission/read errors
+# must not become a passing no-secret result. Scope is explicit, not all disks.
+pattern='sk-ant-[a-z]+[0-9]*-[A-Za-z0-9_-]{40,}'
+scan=0
+env | grep -E "$pattern" >/dev/null || scan=$?
+[[ $scan == 0 || $scan == 1 ]] || die 'environment key scan failed'
+if [[ $scan == 0 ]]; then
+  row FAIL key 'Anthropic key shape in environment'; fails=$((fails + 1))
+fi
+scan=0
+sudo -n grep -rIE "$pattern" /home /root /etc /tmp /var/tmp >/dev/null || scan=$?
+case $scan in
+  0) row FAIL key 'Anthropic key shape in scanned directories'; fails=$((fails + 1)) ;;
+  1) row PASS block 'no Anthropic key shape in scanned directories' ;;
+  *) die 'key scan encountered read errors' ;;
+esac
+status=$(raw -sS -m 5 -o /dev/null -w '%{http_code}' "$GW/") || die 'gateway unreachable'
+[[ $status == 404 ]] || die "unexpected gateway status: $status"
+row PASS allow 'gateway responds'
+status=$(curl -sS -m 15 -o /dev/null -w '%{http_code}' https://pypi.org/simple/) || die 'allowlisted PyPI request failed'
+[[ $status == 200 ]] || die "PyPI expected 200, got $status"
+row PASS allow 'PyPI through authenticated gateway'
+if [[ $fails == 0 ]]; then echo '  all held: tested bypasses blocked; allow checks passed'
+else echo "  $fails FAILED"; fi
 exit "$fails"

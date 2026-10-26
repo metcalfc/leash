@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # works.sh -- run inside the VM. The useful half: real tools, real work,
 # through the gateway, on credentials the VM never holds.
-set -uo pipefail
+set -euo pipefail
 
 step() { printf '\n\033[1m== %s\033[0m\n' "$1"; }
 
@@ -23,7 +23,10 @@ fi
 
 if [[ -n ${ANTHROPIC_BASE_URL:-} ]] && command -v claude >/dev/null; then
   step "Claude Code, on a key it never sees"
-  claude -p "Reply with exactly: LEASH_OK"
+  out=$(CLAUDE_CODE_MAX_RETRIES=0 claude --model "${LEASH_DEMO_MODEL:-haiku}" -p "Reply with exactly: LEASH_OK")
+  printf '%s\n' "$out"
+  grep -qx LEASH_OK <<<"$out" || { echo 'TEST ERROR: Claude did not return LEASH_OK' >&2; exit 2; }
 else
-  echo; echo "(skipping Claude Code: no anthropic route on the gateway, or claude not installed)"
+  echo 'TEST ERROR: anthropic route or Claude installation missing' >&2
+  exit 2
 fi
