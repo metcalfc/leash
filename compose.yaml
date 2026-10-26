@@ -1,6 +1,7 @@
 # docker compose up -d --build   (after `make init`)
 #
-# agentnet is internal: no default route, no outbound NAT, no host. The agent
+# Requires Docker Engine 28+ for the isolated bridge gateway mode.
+# agentnet is internal and isolated: no default route, NAT or host bridge address. The agent
 # can reach exactly one thing -- the gateway -- so HTTPS_PROXY is enforcement,
 # not a suggestion it can unset.
 
@@ -40,4 +41,6 @@ services:
 networks:
   agentnet:
     internal: true
+    driver_opts:
+      com.docker.network.bridge.gateway_mode_ipv4: isolated
   egress: {}

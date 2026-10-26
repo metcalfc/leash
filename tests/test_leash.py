@@ -6,10 +6,12 @@ python3 -m unittest discover -s tests -v
 from __future__ import annotations
 
 import base64
+import contextlib
 import http.client
 import http.server
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import socket
@@ -42,8 +44,30 @@ class FakeUpstream(http.server.BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         n = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(n) or b"{}")
-        FakeUpstream.seen.append({"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}})
-        if body.get("stream"):
+        FakeUpstream.seen.append(
+            {"path": self.path, "headers": {k.lower(): v for k, v in self.headers.items()}, "body": body}
+        )
+        if self.path in ("/v1/chat/completions", "/v1/responses"):
+            chat = self.path == "/v1/chat/completions"
+            usage = {"prompt_tokens": 1000, "completion_tokens": 500} if chat else {
+                "input_tokens": 1000, "output_tokens": 500,
+            }
+            response = {"id": "resp_test", "model": "gpt-test", "usage": usage}
+            if body.get("stream"):
+                if chat:
+                    events = [{"model": "gpt-test", "choices": [{"delta": {"content": "hi"}}], "usage": None}]
+                    if body.get("stream_options", {}).get("include_usage"):
+                        events.append({**response, "choices": []})
+                else:
+                    events = [
+                        {"type": "response.created", "response": {"model": "gpt-test", "usage": None}},
+                        {"type": "response.completed", "response": response},
+                    ]
+                out = b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events) + b"data: [DONE]\n\n"
+                ctype = "text/event-stream"
+            else:
+                out, ctype = json.dumps(response).encode(), "application/json"
+        elif body.get("stream"):
             events = [
                 {
                     "type": "message_start",
@@ -91,7 +115,10 @@ def echo_server() -> socket.socket:
 
     def run() -> None:
         while True:
-            c, _ = s.accept()
+            try:
+                c, _ = s.accept()
+            except OSError:  # closed in tearDown; macOS says ECONNABORTED
+                return
             data = c.recv(1024)
             c.sendall(b"echo:" + data)
             c.close()
@@ -214,6 +241,7 @@ class LeashTest(unittest.TestCase):
         r = c.getresponse()
         self.assertEqual(r.status, 200)
         self.assertIn(b"git-upload-pack", r.read())
+        c.close()
         sent = FakeUpstream.seen[-1]["headers"]["authorization"]
         self.assertEqual(base64.b64decode(sent[6:]).decode(), f"x-access-token:{GH_TOKEN}")
 
@@ -239,7 +267,84 @@ class LeashTest(unittest.TestCase):
         st, _ = self.post("/anthropic/v1/messages", {}, {"Authorization": "Bearer " + self.caps["bob"]})
         self.assertEqual(st, 200)
         # and the cap survives a restart
-        self.assertGreaterEqual(leash.Ledger(self.policy.state_dir / "spend.json").totals("alice")[0], 3.0)
+        self.srv.shutdown()
+        self.srv.server_close()
+        self.srv, self.gw = leash.build_server(self.policy)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.port = self.srv.server_address[1]
+        self.assertEqual(self.post("/anthropic/v1/messages", {}, h)[0], 403)
+
+    def enable_openai(self) -> None:
+        self.gw.p.routes["openai"] = leash.Route("openai", {
+            "upstream": f"http://127.0.0.1:{self.up.server_address[1]}",
+            "credential": "env:T_ANTHROPIC", "inject": "bearer", "meter": True,
+            "paths": ["/v1/chat/completions", "/v1/responses"],
+        })
+
+    def test_openai_json_and_streams_charge_and_enforce_cap(self) -> None:
+        self.enable_openai()
+        self.gw.p.cap_session = 0.001
+        for endpoint in ("chat/completions", "responses"):
+            for stream in (False, True):
+                with self.subTest(endpoint=endpoint, stream=stream):
+                    # Separate identities keep each case independent without resetting the ledger.
+                    session = endpoint + str(stream)
+                    cap = "lsh_" + session
+                    self.gw.sessions[cap] = session
+                    body = {"model": "gpt-test", "stream": stream, "messages": [], "input": "hello"}
+                    if endpoint == "chat/completions" and stream:
+                        body["stream_options"] = {"include_usage": False, "include_obfuscation": False}
+                    headers = {"Authorization": "Bearer " + cap}
+                    self.assertEqual(self.post("/openai/v1/" + endpoint, body, headers)[0], 200)
+                    self.assertAlmostEqual(self.gw.ledger.totals(session)[0], 0.0015)
+                    sent = FakeUpstream.seen[-1]
+                    self.assertEqual(sent["headers"]["authorization"], "Bearer " + REAL_KEY)
+                    if endpoint == "chat/completions" and stream:
+                        self.assertEqual(sent["body"]["stream_options"], {
+                            "include_usage": True, "include_obfuscation": False,
+                        })
+                    before = len(FakeUpstream.seen)
+                    self.assertEqual(self.post("/openai/v1/" + endpoint, body, headers)[0], 403)
+                    self.assertEqual(len(FakeUpstream.seen), before)
+
+    def test_openai_background_and_retrieval_are_refused_before_upstream(self) -> None:
+        self.enable_openai()
+        headers = {"Authorization": "Bearer " + self.caps["alice"]}
+        self.assertEqual(self.post("/openai/v1/responses", {"background": True}, headers)[0], 400)
+        self.assertEqual(self.post("/openai/v1/responses/resp_test", {}, headers)[0], 403)
+        self.assertEqual(FakeUpstream.seen, [])
+
+    def test_validation_denials_are_audited_once_without_secrets(self) -> None:
+        headers = {"Authorization": "Bearer " + self.caps["alice"]}
+        self.assertEqual(self.post("/anthropic/v1/%2e%2e/messages", {}, headers)[0], 400)
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request("POST", "/anthropic/v1/messages", headers={**headers, "Content-Length": self.caps["alice"]})
+        response = conn.getresponse()
+        self.assertEqual(response.status, 400)
+        response.read()
+        conn.close()
+        head, sock = self.connect("localhost:not-a-port", self.caps["alice"])
+        sock.close()
+        self.assertIn(b"400", head.split(b"\r\n")[0])
+        records = self.audit()
+        self.assertEqual(len(records), 3)
+        self.assertTrue(all(r["decision"] == "deny" and r["session"] == "alice" for r in records))
+        self.assertEqual(FakeUpstream.seen, [])
+        self.assertNotIn(self.caps["alice"], json.dumps(records))
+        self.assertNotIn(REAL_KEY, json.dumps(records))
+
+    def test_preflight_checks_running_routes_and_budget_without_inference(self) -> None:
+        self.policy.listen = f"127.0.0.1:{self.port}"
+        self.policy.session_names = ["alice"]
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            leash.cmd_preflight(self.policy, "anthropic", fresh=True)
+        self.assertIn("$1.0000 remaining", output.getvalue())
+        self.assertEqual(FakeUpstream.seen, [])
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(SystemExit, "disabled"):
+            leash.cmd_preflight(self.policy, "openai", fresh=True)
+        self.gw.ledger.add("alice", 0.01)
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(SystemExit, "fresh session"):
+            leash.cmd_preflight(self.policy, "anthropic", fresh=True)
 
     # --- egress
 
@@ -257,6 +362,16 @@ class LeashTest(unittest.TestCase):
         s.sendall(b"ping")
         self.assertEqual(s.recv(100), b"echo:ping")
         s.close()
+
+    def test_egress_needs_a_capability(self) -> None:
+        # Found in the VM spike: an allowlisted host was reachable with no capability at all.
+        head, s = self.connect(f"localhost:{self.echo_port}")
+        s.close()
+        self.assertIn(b"407", head.split(b"\r\n")[0])
+        self.assertIn(b"Proxy-Authenticate", head)
+        head, s = self.connect(f"localhost:{self.echo_port}", "lsh_not-a-real-capability")
+        s.close()
+        self.assertIn(b"407", head.split(b"\r\n")[0])
 
     def test_egress_denied_host_and_port(self) -> None:
         head, s = self.connect("evil.example:443")
@@ -293,10 +408,26 @@ class LeashTest(unittest.TestCase):
         self.assertIn("insteadOf", text)
         self.assertEqual(oct(files[0].stat().st_mode & 0o777), "0o600")
 
+    def test_env_advertises_routes_whose_key_is_missing_at_init(self) -> None:
+        # init runs without keys; the env it writes is pushed to the agent once.
+        # A route must not vanish from it just because serve has not started.
+        self.assertIn("openai", self.policy.disabled_routes)
+        env = leash.env_for(self.policy, self.caps["alice"])
+        self.assertEqual(env["OPENAI_BASE_URL"], "http://leash:8080/openai/v1")
+        status, _ = self.post("/openai/v1/chat/completions", {}, {"Authorization": "Bearer " + self.caps["alice"]})
+        self.assertEqual(status, 404)
+
     def test_report_runs(self) -> None:
         self.post("/anthropic/v1/messages", {"stream": True}, {"Authorization": "Bearer " + self.caps["alice"]})
         self.connect("evil.example:443")[1].close()
-        leash.cmd_report(self.policy, as_json=False)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            leash.cmd_report(self.policy, as_json=True, only_session="alice")
+        rows = json.loads(output.getvalue())
+        self.assertEqual(list(rows), ["alice"])
+        self.assertAlmostEqual(rows["alice"]["usd_today"], 0.0135)
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            leash.cmd_report(self.policy, as_json=False)
+        self.assertIn("most refused", output.getvalue())
 
 
 if __name__ == "__main__":
